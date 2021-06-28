@@ -1441,7 +1441,7 @@ func (c ipamClient) releaseByHandle(ctx context.Context, handleID string, blockC
 
 		// Release the IP by handle.
 		block := allocationBlock{obj.Value.(*model.AllocationBlock)}
-		num := block.releaseByHandle(handleID)
+		num := block.releaseByHandle(ctx, handleID)
 		if num == 0 {
 			// Block has no addresses with this handle, so
 			// all addresses are already unallocated.

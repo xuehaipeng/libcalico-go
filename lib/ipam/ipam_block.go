@@ -15,11 +15,15 @@
 package ipam
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/klog/v2"
 	"math/big"
 	"net"
 	"reflect"
+	"regexp"
 	"strings"
 
 	log "github.com/sirupsen/logrus"
@@ -180,7 +184,7 @@ func (b allocationBlock) NumFreeAddresses() int {
 // empty returns true if the block has released all of its assignable addresses,
 // and returns false if any assignable addresses are in use.
 func (b allocationBlock) empty() bool {
-	return b.containsOnlyReservedIPs()
+	return b.containsOnlyReservedIPs() && len(b.Unallocated) == b.NumAddresses()
 }
 
 // containsOnlyReservedIPs returns true if the block is empty excepted for
@@ -351,7 +355,7 @@ func sanitizeHandle(handleID string) string {
 	return strings.Split(handleID, "\r")[0]
 }
 
-func (b *allocationBlock) releaseByHandle(handleID string) int {
+func (b *allocationBlock) releaseByHandle(ctx context.Context, handleID string) int {
 	attrIndexes := b.attributeIndexesByHandle(handleID)
 	log.Debugf("Attribute indexes to release: %v", attrIndexes)
 	if len(attrIndexes) == 0 {
@@ -371,13 +375,70 @@ func (b *allocationBlock) releaseByHandle(handleID string) int {
 		}
 	}
 
+	nsPersistIP := ctx.Value("ns_persist_ip").([]string)
+	podEx := ctx.Value("pods_exclude_regex").([]string)
+
+	nsPods := make(map[int]types.NamespacedName)
+	for _, idx := range attrIndexes {
+		var ord int
+		for o, i := range b.Allocations {
+			if *i == idx {
+				ord = o
+				break
+			}
+		}
+
+		sec := b.Attributes[idx].AttrSecondary
+		nsPods[ord] = types.NamespacedName{
+			Namespace: sec["namespace"],
+			Name:      sec["pod"],
+		}
+	}
 	// Clean and reorder attributes.
 	b.deleteAttributes(attrIndexes, ordinals)
 
 	// Release the addresses.
 	for _, o := range ordinals {
 		b.Allocations[o] = nil
-		b.Unallocated = append(b.Unallocated, o)
+		// temporarily reserve for
+		var persistIp bool
+		if nsPersistIP == nil || len(nsPersistIP) == 0 {
+			b.Unallocated = append(b.Unallocated, o)
+			continue
+		}
+		for ord, nsp := range nsPods {
+			if ord != o {
+				continue
+			}
+			for _, ns := range nsPersistIP {
+				if nsp.Namespace == ns {
+					if podEx == nil || len(podEx) == 0 {
+						persistIp = true
+						break
+					}
+					matchEx := false
+					for _, ex := range podEx {
+						comp, err := regexp.Compile(ex)
+						if err != nil {
+							klog.Errorf("error compiling regula-expression %s, %q", ex, err)
+							continue
+						}
+						if comp.MatchString(nsp.Name) {
+							matchEx = true
+							break
+						}
+					}
+					if !matchEx {
+						persistIp = true
+					}
+					break
+				}
+			}
+		}
+
+		if !persistIp {
+			b.Unallocated = append(b.Unallocated, o)
+		}
 	}
 	return len(ordinals)
 }
