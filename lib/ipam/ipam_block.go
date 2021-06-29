@@ -382,7 +382,7 @@ func (b *allocationBlock) releaseByHandle(ctx context.Context, handleID string) 
 	for _, idx := range attrIndexes {
 		var ord int
 		for o, i := range b.Allocations {
-			if *i == idx {
+			if idx == *i {
 				ord = o
 				break
 			}
